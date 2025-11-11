@@ -18,11 +18,15 @@
 
 2. Go to the folder that contains `server.py`:
 
+   ```bash
    cd path/to/your/project
+   ```
 
 3. Run:
 
+   ```bash
    python3 server.py
+   ```
 
 You should see something like:
 
@@ -41,8 +45,10 @@ Keep this terminal open. This is your running server.
 2. Go to the same folder
 
 3. Run:
-   
+
+   ```bash
    python3 client.py
+   ```
 
 * Type a message and press **Enter** → it will be sent to the server
 * Type `exit` → the client will disconnect and close
@@ -56,10 +62,12 @@ To simulate multiple users:
 1. Keep the server running.
 2. Open a **third**, **fourth**, … terminal window.
 3. In each one, run:
-   
+
+   ```bash
    cd path/to/your/project
    python client.py
-
+   ```
+   
 Now all clients are connected to the same server:
 
 * Anything typed in one client will appear in the others.
