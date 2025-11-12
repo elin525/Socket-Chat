@@ -87,12 +87,16 @@ def start_server(host="0.0.0.0", port=8080):
 
     server_socket.bind((host, port))
     server_socket.listen(10)
+    server_socket.settimeout(1.0) # set timeout to allow shutdown
     print(f"[Info] Server started, listening on {host}:{port}")
     print("[Info] Press Ctrl+C to stop the server.")
 
     try:
         while True:
-            client_socket, addr = server_socket.accept()
+            try:
+                client_socket, addr = server_socket.accept()
+            except socket.timeout:
+                continue
             print(f"[Info] Accepted connection from {addr[0]}:{addr[1]}")
             client_thread = threading.Thread(
                 target=handle_client,
