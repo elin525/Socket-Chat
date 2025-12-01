@@ -3,6 +3,10 @@ import os
 
 BUFFER_SIZE = 4096
 ENCODING = "utf-8"
+DOWNLOAD_DIR = "client_downloads"
+
+# ensure we have a place to save downloads
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 
 def read_line(sock: socket.socket) -> str:
@@ -84,12 +88,13 @@ def handle_get(sock: socket.socket, filename: str) -> None:
     # 4. Read file content
     file_bytes = read_exact(sock, filesize)
 
-    # 5. Save to current directory
+    # 5. Save to downloads directory
     target_name = os.path.basename(filename)
-    with open(target_name, "wb") as f:
+    target_path = os.path.join(DOWNLOAD_DIR, target_name)
+    with open(target_path, "wb") as f:
         f.write(file_bytes)
 
-    print(f"[Success] Download complete: {target_name}")
+    print(f"[Success] Download complete: {target_path}")
 
 
 def handle_put(sock: socket.socket, filename: str) -> None:
