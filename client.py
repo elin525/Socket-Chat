@@ -1,3 +1,4 @@
+import argparse
 import socket
 import os
 
@@ -268,4 +269,18 @@ def start_client(server_host: str = "127.0.0.1", server_port: int = 8080) -> Non
 
 
 if __name__ == "__main__":
-    start_client(server_host="127.0.0.1", server_port=8080)
+    parser = argparse.ArgumentParser(description="Simple FTP-style client.")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Server host (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Server port (default: 8080)",
+    )
+    args = parser.parse_args()
+
+    start_client(server_host=args.host, server_port=args.port)
