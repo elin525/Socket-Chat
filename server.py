@@ -2,6 +2,8 @@ import socket
 import threading
 import os
 
+BUFFER_SIZE = 4096
+
 #creates a folder to store files
 serverFolder = "server_files"
 os.makedirs(serverFolder, exist_ok=True)
@@ -10,6 +12,32 @@ os.makedirs(serverFolder, exist_ok=True)
 client_sockets = []
 # lock to protect shared data in multithreaded context
 lock = threading.Lock()
+
+
+def read_line(sock: socket.socket) -> str:
+    """
+    Read a single line (ending with '\\n') from a socket.
+    """
+    data = b""
+    while True:
+        chunk = sock.recv(1)
+        if not chunk:
+            raise ConnectionError("Connection closed while reading line")
+        data += chunk
+        if chunk == b"\n":
+            break
+    return data.decode("utf-8").rstrip("\n")
+
+
+def open_data_listener() -> tuple[socket.socket, int]:
+    """
+    Open a data socket listener on an ephemeral port and return (socket, port).
+    """
+    data_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    data_socket.bind(("0.0.0.0", 0))  # 0 lets OS pick a free port
+    data_socket.listen(1)
+    port = data_socket.getsockname()[1]
+    return data_socket, port
 
 def broadcast(message, sender_socket=None):
     """
@@ -77,11 +105,20 @@ def handle_client(client_socket, client_address):
             #first if type the ls command
             if theCommand == "LS":
                 files = os.listdir(serverFolder)
-                if not files:
-                    client_socket.sendall(b"No Files Available\n")
-                else:
-                    listing = "\n".join(files) + "\n"
-                    client_socket.sendall(listing.encode())
+                listing = "\n".join(files) + "\n" if files else "No Files Available\n"
+
+                data_listener, data_port = open_data_listener()
+                print(f"[Debug] LS data port opened: {data_port}")
+                client_socket.sendall(b"OK\n")
+                client_socket.sendall(f"DATAPORT {data_port}\n".encode())
+
+                try:
+                    data_conn, _ = data_listener.accept()
+                    print(f"[Debug] LS data connection accepted on port {data_port}")
+                    with data_conn:
+                        data_conn.sendall(listing.encode("utf-8"))
+                finally:
+                    data_listener.close()
                 
             #Get command to download a file
             elif theCommand == "GET":
@@ -98,16 +135,22 @@ def handle_client(client_socket, client_address):
                     continue
                 
                 filesize = os.path.getsize(filepath)
-                
+
+                data_listener, data_port = open_data_listener()
+                print(f"[Debug] GET data port opened: {data_port} for {filename}")
                 client_socket.sendall(b"OK\n")            
                 client_socket.sendall(f"FILESIZE {filesize}\n".encode())   
+                client_socket.sendall(f"DATAPORT {data_port}\n".encode())
 
-                
-                with open(filepath, "rb") as f:
-                    for chunk in iter(lambda: f.read(4096), b""):
-                        client_socket.sendall(chunk)
-
-                print(f"[INFO] SENT FILE: {filename}")
+                try:
+                    data_conn, _ = data_listener.accept()
+                    print(f"[Debug] GET data connection accepted on port {data_port} for {filename}")
+                    with data_conn, open(filepath, "rb") as f:
+                        for chunk in iter(lambda: f.read(BUFFER_SIZE), b""):
+                            data_conn.sendall(chunk)
+                    print(f"[INFO] SENT FILE: {filename}")
+                finally:
+                    data_listener.close()
                 
             #when typed PUT it should upload file
             elif theCommand == "PUT":
@@ -117,35 +160,50 @@ def handle_client(client_socket, client_address):
                 
                 filename = splitParts[1]
                 filepath = os.path.join(serverFolder, filename)
-                
-                #send a message
+
+                data_listener, data_port = open_data_listener()
+                print(f"[Debug] PUT data port opened: {data_port} for {filename}")
                 client_socket.sendall(b"OK\n")
-                
-                #message should be filesize
-                sizeInfo = client_socket.recv(1024).decode().strip()
-                if not sizeInfo.startswith("FILESIZE"):
-                    client_socket.sendall(b"ERROR: Expected FILESIZE <bytes>\n")
-                    continue
-                
-                filesize = int(sizeInfo.split()[1])
-                print(f"[INFO] Receiving file {filename} ({filesize} bytes)")
-                
-                
-                #recieving file bytes
-                leftOver = filesize
-                with open(filepath, "wb") as f:
-                    while leftOver > 0:
-                        chunk = client_socket.recv(min(4096, leftOver))
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        leftOver -= len(chunk)
-                
-                if leftOver == 0:
-                    client_socket.sendall(b"OK\n")
-                    print(f"[INFO] Saved file: {filename}")
-                else:
-                    client_socket.sendall(b"ERROR Incomplete file received\n")
+                client_socket.sendall(f"DATAPORT {data_port}\n".encode())
+
+                try:
+                    data_conn, _ = data_listener.accept()
+                    print(f"[Debug] PUT data connection accepted on port {data_port} for {filename}")
+                    with data_conn:
+                        try:
+                            sizeInfo = read_line(data_conn)
+                        except ConnectionError:
+                            client_socket.sendall(b"ERROR: Connection lost during FILESIZE\n")
+                            continue
+
+                        if not sizeInfo.startswith("FILESIZE"):
+                            client_socket.sendall(b"ERROR: Expected FILESIZE <bytes>\n")
+                            continue
+                        
+                        try:
+                            filesize = int(sizeInfo.split()[1])
+                        except (IndexError, ValueError):
+                            client_socket.sendall(b"ERROR: Invalid FILESIZE value\n")
+                            continue
+
+                        print(f"[INFO] Receiving file {filename} ({filesize} bytes)")
+                        
+                        leftOver = filesize
+                        with open(filepath, "wb") as f:
+                            while leftOver > 0:
+                                chunk = data_conn.recv(min(BUFFER_SIZE, leftOver))
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                                leftOver -= len(chunk)
+                        
+                        if leftOver == 0:
+                            client_socket.sendall(b"OK\n")
+                            print(f"[INFO] Saved file: {filename}")
+                        else:
+                            client_socket.sendall(b"ERROR Incomplete file received\n")
+                finally:
+                    data_listener.close()
                     
                 #exit command 
             elif theCommand == "EXIT":
