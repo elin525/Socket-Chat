@@ -1,3 +1,4 @@
+import argparse
 import socket
 import os
 
@@ -38,25 +39,66 @@ def read_exact(sock: socket.socket, num_bytes: int) -> bytes:
     return data
 
 
-def handle_ls(sock: socket.socket) -> None:
+def read_all(sock: socket.socket) -> bytes:
+    """
+    Read until the other side closes the socket.
+    """
+    chunks = []
+    while True:
+        chunk = sock.recv(BUFFER_SIZE)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def connect_data_channel(control_sock: socket.socket, server_host: str) -> socket.socket:
+    """
+    Read a DATAPORT line from the control socket and connect a data socket.
+    """
+    data_line = read_line(control_sock)
+    if not data_line.startswith("DATAPORT"):
+        raise ConnectionError(f"Expected DATAPORT from server, got: {data_line}")
+    try:
+        data_port = int(data_line.split()[1])
+    except (IndexError, ValueError):
+        raise ConnectionError(f"Invalid DATAPORT line: {data_line}")
+
+    try:
+        return socket.create_connection((server_host, data_port))
+    except OSError as e:
+        raise ConnectionError(f"Could not connect to data port {data_port}: {e}") from e
+
+
+def handle_ls(sock: socket.socket, server_host: str) -> None:
     """
     Handles the LS command: requests a file listing from the server.
     """
     sock.sendall(b"LS\n")
-    # Assume the server sends the entire listing at once
-    listing = sock.recv(BUFFER_SIZE).decode(ENCODING).rstrip("\n")
-    if not listing:
+    status = read_line(sock)
+    if not status.startswith("OK"):
+        print(f"[Server] {status}")
+        return
+
+    try:
+        with connect_data_channel(sock, server_host) as data_sock:
+            listing = read_all(data_sock).decode(ENCODING).rstrip("\n")
+    except ConnectionError as e:
+        print(f"[Error] Data channel failed: {e}")
+        return
+
+    if not listing or listing == "No Files Available":
         print("[Server] No files returned.")
     else:
         print("[Server] Files on server:")
         print(listing)
 
 
-def handle_get(sock: socket.socket, filename: str) -> None:
+def handle_get(sock: socket.socket, server_host: str, filename: str) -> None:
     """
     Handles the GET command: downloads a file from the server.
     Protocol: client sends 'GET <filename>', server responds with 'OK\\n', 
-    'FILESIZE <bytes>\\n', and then the raw file bytes.
+    'FILESIZE <bytes>\\n', and then provides a data port for the raw file bytes.
     """
     if not filename:
         print("[Error] Usage: GET <filename>")
@@ -83,10 +125,21 @@ def handle_get(sock: socket.socket, filename: str) -> None:
         print(f"[Error] Invalid FILESIZE line: {size_line}")
         return
 
+    try:
+        data_sock = connect_data_channel(sock, server_host)
+    except ConnectionError as e:
+        print(f"[Error] Data channel failed: {e}")
+        return
+
     print(f"[Info] Downloading {filename} ({filesize} bytes)...")
 
-    # 4. Read file content
-    file_bytes = read_exact(sock, filesize)
+    # 4. Read file content over the data socket
+    try:
+        with data_sock:
+            file_bytes = read_exact(data_sock, filesize)
+    except ConnectionError as e:
+        print(f"[Error] Data transfer failed: {e}")
+        return
 
     # 5. Save to downloads directory
     target_name = os.path.basename(filename)
@@ -97,11 +150,12 @@ def handle_get(sock: socket.socket, filename: str) -> None:
     print(f"[Success] Download complete: {target_path}")
 
 
-def handle_put(sock: socket.socket, filename: str) -> None:
+def handle_put(sock: socket.socket, server_host: str, filename: str) -> None:
     """
     Handles the PUT command: uploads a local file to the server.
-    Protocol: client sends 'PUT <filename>', server responds with 'OK\\n', 
-    client sends 'FILESIZE <bytes>\\n', client sends raw file bytes, server responds with final 'OK\\n'.
+    Protocol: client sends 'PUT <filename>', server responds with 'OK\\n' and 'DATAPORT <port>\\n',
+    client connects to data port, sends 'FILESIZE <bytes>\\n' and raw file bytes on data channel,
+    server responds with final 'OK\\n' on the control channel.
     """
     if not filename:
         print("[Error] Usage: PUT <filename>")
@@ -123,19 +177,23 @@ def handle_put(sock: socket.socket, filename: str) -> None:
         print(f"[Server] {status}")
         return
 
-    # 3. Send FILESIZE line
-    sock.sendall(f"FILESIZE {filesize}\n".encode(ENCODING))
+    try:
+        data_sock = connect_data_channel(sock, server_host)
+    except ConnectionError as e:
+        print(f"[Error] Data channel failed: {e}")
+        return
 
-    # 4. Send file content
+    # 3. Send FILESIZE line over data channel
     print(f"[Info] Uploading {basename} ({filesize} bytes)...")
-    with open(filename, "rb") as f:
+    with data_sock, open(filename, "rb") as f:
+        data_sock.sendall(f"FILESIZE {filesize}\n".encode(ENCODING))
         while True:
             chunk = f.read(BUFFER_SIZE)
             if not chunk:
                 break
-            sock.sendall(chunk)
+            data_sock.sendall(chunk)
 
-    # 5. Wait for final server OK
+    # 4. Wait for final server OK on control channel
     final_status = read_line(sock)
     if final_status.startswith("OK"):
         print(f"[Success] File uploaded: {basename}")
@@ -145,8 +203,8 @@ def handle_put(sock: socket.socket, filename: str) -> None:
 
 def start_client(server_host: str = "127.0.0.1", server_port: int = 8080) -> None:
     """
-    Simplified single-connection FTP client.
-    Supported Commands: LS, GET <filename>, PUT <filename>, EXIT.
+    Simplified FTP-style client with separate control and data channels.
+    Supported Commands on control channel: LS, GET <filename>, PUT <filename>, EXIT.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         try:
@@ -189,11 +247,11 @@ def start_client(server_host: str = "127.0.0.1", server_port: int = 8080) -> Non
 
             try:
                 if cmd == "LS":
-                    handle_ls(sock)
+                    handle_ls(sock, server_host)
                 elif cmd == "GET":
-                    handle_get(sock, arg)
+                    handle_get(sock, server_host, arg)
                 elif cmd == "PUT":
-                    handle_put(sock, arg)
+                    handle_put(sock, server_host, arg)
                 elif cmd == "EXIT":
                     sock.sendall(b"EXIT\n")
                     print("[Info] Closing connection...")
@@ -211,4 +269,18 @@ def start_client(server_host: str = "127.0.0.1", server_port: int = 8080) -> Non
 
 
 if __name__ == "__main__":
-    start_client(server_host="127.0.0.1", server_port=8080)
+    parser = argparse.ArgumentParser(description="Simple FTP-style client.")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Server host (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Server port (default: 8080)",
+    )
+    args = parser.parse_args()
+
+    start_client(server_host=args.host, server_port=args.port)
