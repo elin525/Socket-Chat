@@ -1,70 +1,155 @@
-# Socket Chat / Simple FTP (How to Run)
+````markdown
+# Network Programming Project – Multi-Client FTP Server
 
-- `server.py` - starts the server (control channel on 8080, per-transfer data sockets)
-- `client.py` - connects to the server; supports LS / GET / PUT / EXIT
-- Files stored on server under `server_files/`; downloads saved locally to `client_downloads/`
-
----
-
-## 1. Requirements
-
-- Python 3.8+ installed
-- No extra packages needed (`socket`, `threading` are stdlib)
+A small FTP-style system written in Python.  
+One server accepts many clients at the same time. Clients can list files, upload and download files.  
+We also deployed the server on AWS EC2 so different laptops can connect over the Internet.
 
 ---
 
-## 2. Start the Server
+## 1. Team
 
-1. Open a terminal and go to the project folder:
+- Jane Lin – janelin25@csu.fullerton.edu  
+- Kathy Nguyen – KathyLNguyen@csu.fullerton.edu  
+- Abhinav Sharma – abhiinaav820@gmail.com  
+- Jennifer Arellano – arellanojennifer8@gmail.com  
+- Trisha Prajapati – trishap04@csu.fullerton.edu  
 
-   ```bash
-   cd path/to/Socket-Chat
-   ```
+---
 
-2. Run:
+## 2. Technology
 
-   ```bash
-   python server.py
-   ```
+- **Language:** Python 3 (3.8+)
+- **Libraries:** only Python standard library  
+  (`socket`, `threading`, `os`, `sys`, etc.)
+- **Platforms tested:** macOS, Linux, AWS EC2 (Amazon Linux)
 
-You should see:
+---
 
+## 3. Files in This Project
+
+All files are under one folder:
+
+- `server.py`  
+  TCP server. Listens on a control port (8080).  
+  Uses threads to serve multiple clients.  
+  Opens a short-lived data port for each `LS`, `GET`, `PUT`.
+
+- `client.py`  
+  Terminal client. Connects to the server and supports commands:
+
+  ```text
+  LS                 # list files on server
+  GET <filename>     # download file
+  PUT <filename>     # upload file
+  EXIT               # close connection
+````
+
+* Runtime folders:
+
+  * `server_files/` – server-side storage for uploaded files
+  * `client_downloads/` – client-side folder for downloaded files
+
+---
+
+## 4. How to Run (Local or Same LAN)
+
+### 4.1 Requirements
+
+* Python 3 installed on server and clients.
+* Put `server.py`, `client.py`, README in the same folder, e.g.:
+
+```text
+Network-Programming/
+  server.py
+  client.py
+  README.md
 ```
-[Info] Server started, listening on 0.0.0.0:8080
+
+### 4.2 Start the Server
+
+On the machine that will act as the server:
+
+```bash
+cd path/to/Network-Programming
+python3 server.py --host 0.0.0.0 --port 8080
 ```
 
-Keep this terminal open. The server opens a short-lived data port for each LS/GET/PUT.
+If you omit arguments, it also defaults to `0.0.0.0:8080`.
+Keep this terminal open.
+
+### 4.3 Start a Client
+
+On the same machine (or another machine in the same LAN):
+
+```bash
+cd path/to/Network-Programming
+python3 client.py --host <SERVER_IP> --port 8080
+```
+
+Examples:
+
+* Same machine: `--host 127.0.0.1`
+* Another machine in LAN: `--host 192.168.x.x` (server’s LAN IP)
+
+At the `ftp>` prompt you can type:
+
+```text
+LS
+PUT hello.txt
+GET hello.txt
+EXIT
+```
+
+To show **concurrency**, open two client terminals:
+
+* Client A: `PUT message.txt`
+* Client B (at the same time): `LS` and `GET hello.txt`
+
+The server stays responsive and both clients finish their commands.
 
 ---
 
-## 3. Start a Client (Same Machine)
+## 5. How to Run on AWS EC2 (Used in Our Testing)
 
-1. Open another terminal in the same folder.
-2. Run:
+We deployed the server on an Amazon Linux EC2 instance so two physical laptops
+could connect from different places.
 
-   ```bash
-   python client.py
-   ```
+### 5.1 EC2 Setup (summary)
 
-Commands at the `ftp>` prompt:
+* AMI: Amazon Linux
+* Instance type: t2.micro / t3.micro
+* Security Group inbound rules:
 
-- `LS` – list files on the server (`server_files/`)
-- `GET <filename>` – download; saved to `client_downloads/<filename>`
-- `PUT <path-to-file>` – upload local file; stored in `server_files/`
-- `EXIT` – disconnect
+  * SSH: TCP 22 from our IP (for management)
+  * All TCP: ports `0–65535` from `0.0.0.0/0`
 
----
+### 5.2 Upload Code and Start Server
 
-## 4. Start Multiple Clients
+From local machine:
 
-1. Keep the server running.
-2. Open more terminals and run `python client.py` in each.
-3. Use LS/GET/PUT from any client; uploads appear in `server_files/` and can be downloaded by others.
+```bash
+scp -i ~/.ssh/socket-chat-key.pem server.py client.py \
+  ec2-user@<EC2_PUBLIC_IP>:~/Network-Programming/
+```
 
----
+SSH into EC2:
 
-## 5. Different Machines
+```bash
+ssh -i ~/.ssh/socket-chat-key.pem ec2-user@<EC2_PUBLIC_IP>
+cd ~/Network-Programming
+mkdir -p server_files
+python3 server.py --host 0.0.0.0 --port 8080
+```
 
-- Start `server.py` on the host and note its IP.
-- Edit the defaults in `client.py` (at the bottom) or add CLI args if desired, then run the client from other machines on the same network.
-- Ensure the server machine allows inbound on the chosen port (default 8080).
+### 5.3 Connect from Two Different Laptops
+
+On each laptop:
+
+```bash
+cd path/to/Network-Programming
+python3 client.py --host <EC2_PUBLIC_IP> --port 8080
+```
+
+Both laptops were connected to the same EC2 server and could upload / download
+at the same time.
